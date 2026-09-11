@@ -1,5 +1,16 @@
 require("nvchad.configs.lspconfig").defaults()
 
+-- ===== Signature Help Configuration =====
+vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, {
+  border = "rounded",
+  focusable = false,
+  close_events = { "CursorMoved", "BufHidden", "InsertCharPre" },
+  max_height = 15,
+  max_width = 80,
+  title = " Signature ",
+  title_pos = "center",
+})
+
 -- ===== Smart Diagnostic Handler =====
 -- Shows all errors when cursor not on error line
 -- Shows only current line error when cursor on error line
@@ -86,7 +97,15 @@ vim.api.nvim_create_autocmd("LspAttach", {
   end,
 })
 
+local on_attach = function(client, bufnr)
+  if client.server_capabilities.signatureHelpProvider then
+    vim.keymap.set("n", "<C-k>", vim.lsp.buf.signature_help, { buffer = bufnr, desc = "LSP Signature Help" })
+    vim.keymap.set("i", "<C-k>", vim.lsp.buf.signature_help, { buffer = bufnr, desc = "LSP Signature Help" })
+  end
+end
+
 vim.lsp.config("clangd", {
+  on_attach = on_attach,
   cmd = {
     "clangd",
     "--background-index",
@@ -109,6 +128,7 @@ vim.lsp.config("clangd", {
 local venv = require "configs.venv"
 
 vim.lsp.config("pyright", {
+  on_attach = on_attach,
   settings = {
     python = {
       pythonPath = venv.find_python(),
@@ -129,7 +149,10 @@ vim.lsp.config("pyright", {
   },
 })
 
-vim.lsp.config("cmake", {})
+vim.lsp.config("cmake", { on_attach = on_attach })
+
+vim.lsp.config("html", { on_attach = on_attach })
+vim.lsp.config("cssls", { on_attach = on_attach })
 
 vim.lsp.enable { "html", "cssls", "clangd", "pyright", "cmake" }
 
