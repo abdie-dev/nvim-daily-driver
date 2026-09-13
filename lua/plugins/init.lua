@@ -166,4 +166,24 @@ return {
       require("lsp_signature").setup(opts)
     end,
   },
+
+  {
+    -- notifikasi minimal & tenang: tanpa animasi geser, render ramping
+    "rcarriga/nvim-notify",
+    lazy = false,
+    priority = 900,
+    opts = {
+      render = "minimal",
+      stages = "static",
+      timeout = 2000,
+      top_down = false,
+      max_width = 60,
+      max_height = 10,
+      background_colour = "#1a1b26",
+    },
+    config = function(_, opts)
+      require("notify").setup(opts)
+      vim.notify = require "notify"
+    end,
+  },
 }

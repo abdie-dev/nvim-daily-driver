@@ -104,6 +104,7 @@ M.base46 = {
 
 M.nvdash = { load_on_startup = true }
 M.ui = {
+  telescope = { style = "bordered" }, -- konsisten dgn float rounded
   tabufline = {
     lazyload = false
   },
@@ -137,6 +138,19 @@ M.ui = {
         return ("%%#St_%sModeSep#\u{e0b6}%%#St_%sMode# \u{e6a6}%%#St_%sModeText# %s %%#St_sep_r#\u{e0b4} %%#ST_EmptySpace#"):format(hl, hl, hl, txt)
       end,
     },
+  },
+}
+
+-- default global utk semua floating terminal (runner <leader>r, <A-i>, ...).
+-- float_opts per-panggilan di-merge di atas ini.
+M.term = {
+  float = {
+    relative = "editor",
+    row = 0.16,
+    col = 0.14,
+    width = 0.72,
+    height = 0.65,
+    border = "rounded",
   },
 }
 

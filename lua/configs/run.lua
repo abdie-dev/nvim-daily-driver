@@ -134,35 +134,33 @@ function M.run()
     return
   end
 
-  -- buang sisa terminal floating lama (kalau ada) -> tiap tekan = window baru
+  -- satu float run dalam satu waktu: hapus float lama biar tenang, tiap tekan = run baru
   local old = find_smartrun_buf()
   if old and vim.api.nvim_buf_is_valid(old) then
     pcall(vim.api.nvim_buf_delete, old, { force = true })
   end
 
-  local wrapped = ("%s ; rc=$? ; echo ; echo \"[exit: $rc]\" ; printf \"\\n-- [Enter] atau [q] lalu Enter untuk menutup --\\n\" ; read choice ; exit")
-    :format(cmd)
+  local name = vim.fn.fnamemodify(vim.fn.expand "%:p", ":t")
+  -- %%s dibiarkan untuk printf shell (diisi "$rc"), %s lainnya diisi Lua
+  local wrapped = ("printf '\\n── 󰜎 %s ──\\n\\n' ; %s ; rc=$? ; printf '\\n── [exit: %%s] ──\\n' \"$rc\"")
+    :format(name:gsub("'", "'\\''"), cmd)
 
   require("nvchad.term").new {
     pos = "float",
     id = "smartrun",
     cmd = wrapped,
+    -- float_opts digabung ke nvconfig.term.float; title + border rounded biar konsisten dgn float LSP
+    float_opts = {
+      width = 0.72,
+      height = 0.65,
+      row = 0.16,
+      col = 0.14,
+      border = "rounded",
+      title = (" 󰜎 %s "):format(name),
+      title_pos = "center",
+    },
+    winopts = { winblend = 8 },
   }
-
-  -- tutup otomatis jendela floating setelah program selesai (shell exit)
-  local buf = find_smartrun_buf()
-  if buf and vim.api.nvim_buf_is_valid(buf) then
-    vim.api.nvim_create_autocmd("TermClose", {
-      buffer = buf,
-      once = true,
-      callback = function()
-        local w = vim.fn.bufwinid(buf)
-        if w ~= -1 then
-          pcall(vim.api.nvim_win_close, w, true)
-        end
-      end,
-    })
-  end
 end
 
 return M
