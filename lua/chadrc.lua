@@ -111,6 +111,8 @@ M.ui = {
   statusline = {
     theme = "minimal",
     separator_style = "round",
+    -- default NvChad + "run" disisipkan sebelum diagnostics
+    order = { "mode", "file", "git", "%=", "lsp_msg", "%=", "run", "diagnostics", "lsp", "cwd", "cursor" },
     modules = {
       mode = function()
         if vim.api.nvim_get_current_win() ~= vim.g.statusline_winid then
@@ -136,6 +138,19 @@ M.ui = {
         end
 
         return ("%%#St_%sModeSep#\u{e0b6}%%#St_%sMode# \u{e6a6}%%#St_%sModeText# %s %%#St_sep_r#\u{e0b4} %%#ST_EmptySpace#"):format(hl, hl, hl, txt)
+      end,
+
+      -- hasil <leader>r terakhir: kosong kalau belum pernah run
+      run = function()
+        local ok, runner = pcall(require, "configs.run")
+        local last = ok and runner.last or nil
+        if not last then
+          return ""
+        end
+        if last.code == 0 then
+          return ("%%#DiagnosticOk# ✓ %s "):format(last.secs)
+        end
+        return ("%%#DiagnosticError# ✗ exit %d "):format(last.code)
       end,
     },
   },

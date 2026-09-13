@@ -272,13 +272,13 @@ Then press `U` to update all, or navigate to specific packages.
 
 ### Smart Runner (`<leader>r`)
 
-Compiles and runs the current file (C/C++ via g++/gcc, Python via detected venv) in a floating terminal:
+Compiles and runs the current file in a floating terminal. Supported: C/C++ (g++/gcc), C, Python (detected venv), Lua (luajit/lua), Shell (bash/sh), Go (`go run`), Rust (`cargo run` in Cargo projects, else `rustc` single-file).
 
+- **Autosave**: modified file is written automatically before running
 - **While running**: animated spinner in the title (`⠋ main.cpp · running…`), yellow border
 - **When done**: title becomes `✓ main.cpp · 0.42s` (green border) or `✗ main.cpp · 0.10s` (red border), with a colored footer showing exit code + elapsed time
-- Press `q` (normal mode) to close the float, or just hit `<leader>r` again for a fresh run
-
-The done-state is delivered live from the shell back into Neovim via `$NVIM --remote-expr`; if unavailable, the colored footer still shows everything.
+- **Statusline**: last run result (`✓ 0.42s` / `✗ exit 1`) appears next to diagnostics
+- **Closing the float**: `q` (normal mode) or double-`Esc` (terminal mode) — no need to type `exit`. Or just hit `<leader>r` again for a fresh run
 
 ## Customization
 

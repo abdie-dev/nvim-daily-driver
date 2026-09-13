@@ -12,15 +12,10 @@ local function pick(candidates)
   end
 end
 
-local function find_smartrun_buf()
-  for _, t in pairs(vim.g.nvchad_terms or {}) do
-    if t.id == "smartrun" then
-      return t.buf
-    end
-  end
-end
+-- hasil run terakhir, dibaca statusline. nil = belum pernah run.
+M.last = nil
 
--- deteksi program yang butuh input terminal (cin/scanf/getchar/getline/fgets / input())
+-- deteksi program yang butuh input terminal (cin/scanf/getchar/getline/fgets / input() / ...)
 -- kalau iya: stdin dibiarkan dari terminal (menunggu Enter), bukan dipaksa EOF
 local function uses_stdin()
   local ft = vim.bo.filetype
@@ -28,6 +23,22 @@ local function uses_stdin()
 
   if ft == "python" then
     return text:find("input%s*%(") ~= nil
+  end
+
+  if ft == "lua" then
+    return text:find("io%.read") ~= nil
+  end
+
+  if ft == "go" then
+    return text:find("Scan") ~= nil
+  end
+
+  if ft == "rust" then
+    return text:find("read_line") ~= nil or text:find("stdin%s*%(") ~= nil
+  end
+
+  if ft == "sh" or ft == "bash" then
+    return text:find("%f[%w_]read%f[^%w_]") ~= nil
   end
 
   return text:find("%f[%w_]cin%f[^%w_]") ~= nil
@@ -70,14 +81,6 @@ local function sibling_sources(dir, kind)
     end
   end
   return out
-end
-
-local function find_smartrun_buf()
-  for _, t in pairs(vim.g.nvchad_terms or {}) do
-    if t.id == "smartrun" then
-      return t.buf
-    end
-  end
 end
 
 function M.build_command()
@@ -124,10 +127,48 @@ function M.build_command()
     return ("cd %s && %s %s%s"):format(shq(dir), shq(py), shq(file), io_redirect())
   end
 
+  if ft == "lua" then
+    local interp = pick { "luajit", "lua" }
+    if not interp then
+      return nil, "Interpreter Lua (luajit/lua) tidak ditemukan"
+    end
+    return ("cd %s && %s %s%s"):format(shq(dir), interp, shq(file), io_redirect())
+  end
+
+  if ft == "sh" or ft == "bash" then
+    local sh = pick { "bash", "sh" }
+    return ("cd %s && %s %s%s"):format(shq(dir), sh, shq(file), io_redirect())
+  end
+
+  if ft == "go" then
+    if vim.fn.executable "go" == 0 then
+      return nil, "Go toolchain tidak ditemukan"
+    end
+    return ("cd %s && go run %s%s"):format(shq(dir), shq(file), io_redirect())
+  end
+
+  if ft == "rust" then
+    if vim.fn.filereadable(dir .. "/Cargo.toml") == 1 then
+      if vim.fn.executable "cargo" == 0 then
+        return nil, "Cargo tidak ditemukan"
+      end
+      return ("cd %s && cargo run --quiet%s"):format(shq(dir), io_redirect())
+    end
+    local rustc = pick { "rustc" }
+    if not rustc then
+      return nil, "Compiler Rust (rustc/cargo) tidak ditemukan"
+    end
+    local out = "/tmp/nvim-run-" .. vim.fn.fnamemodify(file, ":t")
+    return ("cd %s && %s -O -o %s %s && %s%s")
+      :format(shq(dir), rustc, shq(out), shq(file), shq(out), io_redirect())
+  end
+
   return nil, "Belum ada runner untuk filetype: " .. ft
 end
 
 -- ===== dynamic runner UI: spinner + status title + border tint =====
+-- float dibuat sendiri (bukan nvchad.term.new) supaya tidak ada `; shell` nyangkut:
+-- program selesai = job selesai = on_exit Lua asli. Tidak perlu ketik `exit`.
 vim.api.nvim_set_hl(0, "RunFloatOk", { link = "DiagnosticOk", default = true })
 vim.api.nvim_set_hl(0, "RunFloatFail", { link = "DiagnosticError", default = true })
 vim.api.nvim_set_hl(0, "RunFloatBusy", { link = "DiagnosticWarn", default = true })
@@ -162,28 +203,64 @@ local function spin_start(win, name)
   end))
 end
 
--- dipanggil shell via `nvim --server $NVIM --remote-expr` saat program selesai.
--- kalau callback gagal (no server), footer shell tetap tampil — graceful degrade.
-function M.on_done(code, secs)
+local function close_run()
   spin_stop()
-  local buf = find_smartrun_buf()
-  local win = (buf and vim.api.nvim_buf_is_valid(buf)) and vim.fn.bufwinid(buf) or -1
-  if win == -1 then
-    return 1
+  local r = M._run
+  M._run = nil
+  if r and r.win and vim.api.nvim_win_is_valid(r.win) then
+    pcall(vim.api.nvim_win_close, r.win, true)
   end
-  local ok = tonumber(code) == 0
-  local hl = ok and "RunFloatOk" or "RunFloatFail"
-  local mark = ok and "✓" or "✗"
-  local name = (M._run and M._run.name) or "run"
-  pcall(vim.api.nvim_win_set_config, win, {
-    title = (" %s %s · %s "):format(mark, name, tostring(secs)),
-    title_pos = "center",
-  })
-  vim.wo[win].winhl = "FloatBorder:" .. hl .. ",FloatTitle:" .. hl
-  return 1
 end
 
--- bangun command terbungkus: header + timing + footer berwarna + callback selesai.
+-- handler selesai: dipanggil langsung Neovim via termopen on_exit (tanpa subprocess)
+local function handle_exit(code)
+  spin_stop()
+  local r = M._run
+  if not (r and r.win and vim.api.nvim_win_is_valid(r.win)) then
+    return
+  end
+  local secs = ("%.2fs"):format((vim.uv.hrtime() - r.t0) / 1e9)
+  local ok = code == 0
+  M.last = { code = code, secs = secs, name = r.name }
+  local hl = ok and "RunFloatOk" or "RunFloatFail"
+  local mark = ok and "✓" or "✗"
+  pcall(vim.api.nvim_win_set_config, r.win, {
+    title = (" %s %s · %s "):format(mark, r.name, secs),
+    title_pos = "center",
+  })
+  vim.wo[r.win].winhl = "FloatBorder:" .. hl .. ",FloatTitle:" .. hl
+  vim.cmd "redrawstatus"
+end
+
+local function open_float(name)
+  -- hormati default global M.term (chadrc), timpa dgn ukuran runner
+  local term_cfg = require("nvconfig").term
+  local opts = vim.tbl_deep_extend("force", term_cfg.float, {
+    width = 0.72,
+    height = 0.65,
+    row = 0.16,
+    col = 0.14,
+    border = "rounded",
+    title = (" ⟳ %s "):format(name),
+    title_pos = "center",
+  })
+  opts.width = math.ceil(opts.width * vim.o.columns)
+  opts.height = math.ceil(opts.height * vim.o.lines)
+  opts.row = math.ceil(opts.row * vim.o.lines)
+  opts.col = math.ceil(opts.col * vim.o.columns)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  local win = vim.api.nvim_open_win(buf, true, opts)
+  vim.bo[buf].buflisted = false
+  vim.bo[buf].bufhidden = "wipe" -- tutup window = buffer hilang, tidak menumpuk
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].winblend = 8
+  vim.wo[win].winhl = "FloatBorder:RunFloatBusy,FloatTitle:RunFloatBusy"
+  return buf, win
+end
+
+-- bangun command terbungkus: header + timing + footer berwarna.
 -- dipisah biar gampang dites tanpa buka UI.
 function M.build_wrapped(cmd, name)
   local safe = name:gsub("'", "'\\''")
@@ -193,62 +270,41 @@ function M.build_wrapped(cmd, name)
     .. "t1=$(date +%s%N 2>/dev/null || echo 0) ; ms=$(( (t1 - t0) / 1000000 )) ; "
     .. "secs=$(awk -v ms=\"$ms\" 'BEGIN { printf \"%.2fs\", (ms < 0 ? 0 : ms) / 1000 }') ; "
     .. "if [ \"$rc\" -eq 0 ]; then c=32; mark='✓'; else c=31; mark='✗'; fi ; "
-    .. "printf '\\n── \\033[%sm%s exit: %s · %s\\033[0m ──\\n' \"$c\" \"$mark\" \"$rc\" \"$secs\" ; "
-    .. "if [ -n \"$NVIM\" ]; then nvim --server \"$NVIM\" --remote-expr "
-    .. "\"v:lua.require'configs.run'.on_done($rc, '$secs')\" >/dev/null 2>&1 || true; fi"
+    .. "printf '\\n── \\033[%sm%s exit: %s · %s\\033[0m ──\\n' \"$c\" \"$mark\" \"$rc\" \"$secs\""
 end
 
 function M.run()
+  -- autosave: tidak perlu :w manual
+  if vim.bo.modified and vim.fn.expand "%:p" ~= "" then
+    vim.cmd "silent! write"
+  end
+
   local cmd, err = M.build_command()
   if not cmd then
     vim.notify(err, vim.log.levels.WARN)
     return
   end
 
-  spin_stop()
-  -- satu float run dalam satu waktu: hapus float lama biar tenang, tiap tekan = run baru
-  local old = find_smartrun_buf()
-  if old and vim.api.nvim_buf_is_valid(old) then
-    pcall(vim.api.nvim_buf_delete, old, { force = true })
-  end
+  -- satu float run dalam satu waktu, tiap tekan = run baru
+  close_run()
 
   local name = vim.fn.fnamemodify(vim.fn.expand "%:p", ":t")
-  local wrapped = M.build_wrapped(cmd, name)
+  local buf, win = open_float(name)
+  M._run = { buf = buf, win = win, name = name, t0 = vim.uv.hrtime() }
+  spin_start(win, name)
 
-  require("nvchad.term").new {
-    pos = "float",
-    id = "smartrun",
-    cmd = wrapped,
-    -- float_opts digabung ke nvconfig.term.float; title + border rounded biar konsisten dgn float LSP
-    float_opts = {
-      width = 0.72,
-      height = 0.65,
-      row = 0.16,
-      col = 0.14,
-      border = "rounded",
-      title = (" ⟳ %s "):format(name),
-      title_pos = "center",
-    },
-    winopts = { winblend = 8 },
-  }
+  -- q (normal) / double-Esc (terminal): tutup float, tanpa ketik exit
+  vim.keymap.set("n", "q", close_run, { buffer = buf, nowait = true, desc = "Close run float" })
+  vim.keymap.set("t", "<Esc><Esc>", close_run, { buffer = buf, nowait = true, desc = "Close run float" })
 
-  local buf = find_smartrun_buf()
-  if buf and vim.api.nvim_buf_is_valid(buf) then
-    M._run = { name = name }
-    local win = vim.fn.bufwinid(buf)
-    if win ~= -1 then
-      vim.wo[win].winhl = "FloatBorder:RunFloatBusy,FloatTitle:RunFloatBusy"
-      spin_start(win, name)
-    end
-    -- q = tutup float run (dari normal mode)
-    vim.keymap.set("n", "q", function()
-      spin_stop()
-      local w = vim.fn.bufwinid(buf)
-      if w ~= -1 then
-        vim.api.nvim_win_close(w, true)
-      end
-    end, { buffer = buf, nowait = true, desc = "Close run float" })
-  end
+  vim.cmd "startinsert"
+  vim.fn.termopen({ vim.o.shell, "-c", M.build_wrapped(cmd, name) }, {
+    on_exit = function(_, code)
+      vim.schedule(function()
+        handle_exit(code)
+      end)
+    end,
+  })
 end
 
 return M
