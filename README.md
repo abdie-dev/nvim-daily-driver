@@ -262,12 +262,23 @@ Then press `U` to update all, or navigate to specific packages.
 | Normal | `<leader>rn` | LSP rename |
 | Normal | `<leader>ca` | Code actions |
 | Normal | `<leader>f` | Format buffer |
+| Normal | `<leader>r` | Run current file (smart runner, see below) |
 | Normal | `gd` | Go to definition |
 | Normal | `gr` | Go to references |
 | Normal | `K` | Hover documentation |
 | Normal | `[d` / `]d` | Previous/Next diagnostic |
 
 *See `lua/mappings.lua` for complete mappings*
+
+### Smart Runner (`<leader>r`)
+
+Compiles and runs the current file (C/C++ via g++/gcc, Python via detected venv) in a floating terminal:
+
+- **While running**: animated spinner in the title (`⠋ main.cpp · running…`), yellow border
+- **When done**: title becomes `✓ main.cpp · 0.42s` (green border) or `✗ main.cpp · 0.10s` (red border), with a colored footer showing exit code + elapsed time
+- Press `q` (normal mode) to close the float, or just hit `<leader>r` again for a fresh run
+
+The done-state is delivered live from the shell back into Neovim via `$NVIM --remote-expr`; if unavailable, the colored footer still shows everything.
 
 ## Customization
 

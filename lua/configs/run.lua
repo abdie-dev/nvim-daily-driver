@@ -127,6 +127,77 @@ function M.build_command()
   return nil, "Belum ada runner untuk filetype: " .. ft
 end
 
+-- ===== dynamic runner UI: spinner + status title + border tint =====
+vim.api.nvim_set_hl(0, "RunFloatOk", { link = "DiagnosticOk", default = true })
+vim.api.nvim_set_hl(0, "RunFloatFail", { link = "DiagnosticError", default = true })
+vim.api.nvim_set_hl(0, "RunFloatBusy", { link = "DiagnosticWarn", default = true })
+
+local spin_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local spin = { timer = nil, i = 0 }
+
+local function spin_stop()
+  if spin.timer then
+    pcall(function()
+      spin.timer:stop()
+      spin.timer:close()
+    end)
+    spin.timer = nil
+  end
+end
+
+local function spin_start(win, name)
+  spin_stop()
+  local timer = vim.uv.new_timer()
+  spin.timer = timer
+  timer:start(0, 100, vim.schedule_wrap(function()
+    if not (win and vim.api.nvim_win_is_valid(win)) then
+      spin_stop()
+      return
+    end
+    spin.i = spin.i % #spin_frames + 1
+    pcall(vim.api.nvim_win_set_config, win, {
+      title = (" %s %s · running… "):format(spin_frames[spin.i], name),
+      title_pos = "center",
+    })
+  end))
+end
+
+-- dipanggil shell via `nvim --server $NVIM --remote-expr` saat program selesai.
+-- kalau callback gagal (no server), footer shell tetap tampil — graceful degrade.
+function M.on_done(code, secs)
+  spin_stop()
+  local buf = find_smartrun_buf()
+  local win = (buf and vim.api.nvim_buf_is_valid(buf)) and vim.fn.bufwinid(buf) or -1
+  if win == -1 then
+    return 1
+  end
+  local ok = tonumber(code) == 0
+  local hl = ok and "RunFloatOk" or "RunFloatFail"
+  local mark = ok and "✓" or "✗"
+  local name = (M._run and M._run.name) or "run"
+  pcall(vim.api.nvim_win_set_config, win, {
+    title = (" %s %s · %s "):format(mark, name, tostring(secs)),
+    title_pos = "center",
+  })
+  vim.wo[win].winhl = "FloatBorder:" .. hl .. ",FloatTitle:" .. hl
+  return 1
+end
+
+-- bangun command terbungkus: header + timing + footer berwarna + callback selesai.
+-- dipisah biar gampang dites tanpa buka UI.
+function M.build_wrapped(cmd, name)
+  local safe = name:gsub("'", "'\\''")
+  return "printf '\\n── 󰜎 " .. safe .. " ──\\n\\n' ; "
+    .. "t0=$(date +%s%N 2>/dev/null || echo 0) ; "
+    .. cmd .. " ; rc=$? ; "
+    .. "t1=$(date +%s%N 2>/dev/null || echo 0) ; ms=$(( (t1 - t0) / 1000000 )) ; "
+    .. "secs=$(awk -v ms=\"$ms\" 'BEGIN { printf \"%.2fs\", (ms < 0 ? 0 : ms) / 1000 }') ; "
+    .. "if [ \"$rc\" -eq 0 ]; then c=32; mark='✓'; else c=31; mark='✗'; fi ; "
+    .. "printf '\\n── \\033[%sm%s exit: %s · %s\\033[0m ──\\n' \"$c\" \"$mark\" \"$rc\" \"$secs\" ; "
+    .. "if [ -n \"$NVIM\" ]; then nvim --server \"$NVIM\" --remote-expr "
+    .. "\"v:lua.require'configs.run'.on_done($rc, '$secs')\" >/dev/null 2>&1 || true; fi"
+end
+
 function M.run()
   local cmd, err = M.build_command()
   if not cmd then
@@ -134,6 +205,7 @@ function M.run()
     return
   end
 
+  spin_stop()
   -- satu float run dalam satu waktu: hapus float lama biar tenang, tiap tekan = run baru
   local old = find_smartrun_buf()
   if old and vim.api.nvim_buf_is_valid(old) then
@@ -141,9 +213,7 @@ function M.run()
   end
 
   local name = vim.fn.fnamemodify(vim.fn.expand "%:p", ":t")
-  -- %%s dibiarkan untuk printf shell (diisi "$rc"), %s lainnya diisi Lua
-  local wrapped = ("printf '\\n── 󰜎 %s ──\\n\\n' ; %s ; rc=$? ; printf '\\n── [exit: %%s] ──\\n' \"$rc\"")
-    :format(name:gsub("'", "'\\''"), cmd)
+  local wrapped = M.build_wrapped(cmd, name)
 
   require("nvchad.term").new {
     pos = "float",
@@ -156,11 +226,29 @@ function M.run()
       row = 0.16,
       col = 0.14,
       border = "rounded",
-      title = (" 󰜎 %s "):format(name),
+      title = (" ⟳ %s "):format(name),
       title_pos = "center",
     },
     winopts = { winblend = 8 },
   }
+
+  local buf = find_smartrun_buf()
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    M._run = { name = name }
+    local win = vim.fn.bufwinid(buf)
+    if win ~= -1 then
+      vim.wo[win].winhl = "FloatBorder:RunFloatBusy,FloatTitle:RunFloatBusy"
+      spin_start(win, name)
+    end
+    -- q = tutup float run (dari normal mode)
+    vim.keymap.set("n", "q", function()
+      spin_stop()
+      local w = vim.fn.bufwinid(buf)
+      if w ~= -1 then
+        vim.api.nvim_win_close(w, true)
+      end
+    end, { buffer = buf, nowait = true, desc = "Close run float" })
+  end
 end
 
 return M
